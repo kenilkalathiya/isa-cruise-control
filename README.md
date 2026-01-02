@@ -32,6 +32,13 @@ The system maintains a target speed, adapts automatically to speed limits, and v
 - Non-blocking sensor callbacks
 - Stable OpenCV window handling
 
+
+## Note on Simulation Constraints
+Due to GPU memory limitations, some CARLA towns could not be loaded reliably.
+To ensure stable testing, zone-based speed-limit logic was implemented to emulate
+real-world speed-limit transitions while validating ISA behavior.
+
+
 ---
 
 
