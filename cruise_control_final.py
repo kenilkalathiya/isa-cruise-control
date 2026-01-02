@@ -36,25 +36,25 @@ overlay_state = "INIT"
 LOOKAHEAD_DIST = 3.0 
 
 
-class SpeedLimitManager:
-    def __init__(self):
-        self.current_limit = 10.0  # initial speed limit
-        self.start_time = time.time()
+# class SpeedLimitManager:
+#     def __init__(self):
+#         self.current_limit = 10.0  # initial speed limit
+#         self.start_time = time.time()
 
-    def update(self):
-        """Simulate road speed-limit changes over time"""
-        elapsed = time.time() - self.start_time
+#     def update(self):
+#         """Simulate road speed-limit changes over time"""
+#         elapsed = time.time() - self.start_time
 
-        if elapsed < 5:
-            self.current_limit = 20.0
-        elif elapsed < 10:
-            self.current_limit = 5.0
-        elif elapsed < 15:
-            self.current_limit = 20.0
-        else:
-            self.current_limit = 30.0
+#         if elapsed < 5:
+#             self.current_limit = 20.0
+#         elif elapsed < 10:
+#             self.current_limit = 5.0
+#         elif elapsed < 15:
+#             self.current_limit = 20.0
+#         else:
+#             self.current_limit = 30.0
 
-        return self.current_limit
+#         return self.current_limit
 
 def get_speed_kmh(vehicle):
     v = vehicle.get_velocity()
@@ -89,6 +89,35 @@ def compute_steering(vehicle, waypoint):
     
     return max(-1.0, min(1.0, diff * 0.03)) # 0.03 is the steering sensitivity
 
+def spawn_visual_speed_sign(world, transform):
+    blueprint_library = world.get_blueprint_library()
+
+    bp = blueprint_library.find("static.prop.constructioncone")
+
+    sign = world.try_spawn_actor(bp, transform)
+    if sign:
+        print("✅ Spawned visual speed sign (cone)")
+    return sign
+
+def get_forced_speed_limit(vehicle, start_location):
+    """
+    Simulate road speed limits using distance traveled
+    """
+    loc = vehicle.get_location()
+    dist = loc.distance(start_location)
+
+    if dist < 50:
+        return 30.0
+    elif dist < 100:
+        return 50.0
+    elif dist < 150:
+        return 20.0
+    else:
+        return 40.0
+
+
+
+
 def main():
     global integral, prev_error
 
@@ -113,8 +142,35 @@ def main():
         vehicle = world.try_spawn_actor(bp, random.choice(spawn_points))
         if not vehicle: return
 
+    start_location = vehicle.get_location()
+
+
     vehicle.set_autopilot(False)
     vehicle.set_simulate_physics(True)
+
+    # -------- SPAWN VISUAL SPEED SIGNS (VISION TARGETS) --------
+    spawned_signs = []
+    road_map = world.get_map()
+    wp = road_map.get_waypoint(vehicle.get_location())
+
+    for i in range(3):
+        sign_transform = wp.transform
+
+        # Right side of road
+        sign_transform.location += sign_transform.get_right_vector() * 3.0
+
+        # Much closer
+        sign_transform.location += sign_transform.get_forward_vector() * (8 + i * 8)
+
+        # Raise it clearly into camera view
+        sign_transform.location.z += 1.0
+
+        sign = spawn_visual_speed_sign(world, sign_transform)
+        if sign:
+            spawned_signs.append(sign)
+
+
+
 
         # ----- attach camera -----
     camera_bp = world.get_blueprint_library().find("sensor.camera.rgb")
@@ -134,7 +190,7 @@ def main():
 
     camera.listen(lambda image: process_image(image))
 
-    speed_manager = SpeedLimitManager()
+    # speed_manager = SpeedLimitManager()
 
     # Set spectator camera to follow car
     spectator = world.get_spectator()
@@ -146,7 +202,15 @@ def main():
         cv2.resizeWindow("Front Camera", 800, 600)
         while True:
             world.tick()
-            TARGET_SPEED = speed_manager.update()
+            # TARGET_SPEED = speed_manager.update()
+            # current_wp = world.get_map().get_waypoint(vehicle.get_location())
+            # TARGET_SPEED = vehicle.get_speed_limit()
+            TARGET_SPEED = get_forced_speed_limit(vehicle, start_location)
+
+
+
+
+
 
 
             # 1. Update Camera
@@ -207,6 +271,85 @@ def main():
             if latest_frame is not None:
                 frame = latest_frame.copy()
 
+                    # -------- ROI FOR SPEED LIMIT SIGNS --------
+                h, w, _ = frame.shape
+
+                roi_x1 = int(0.45 * w)
+                roi_y1 = int(0.05 * h)
+                roi_x2 = int(0.95 * w)
+                roi_y2 = int(0.60 * h)
+
+                roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
+
+                # Convert ROI to grayscale
+                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+
+                # Blur to reduce noise
+                gray = cv2.GaussianBlur(gray, (9, 9), 1.5)
+
+                circles = cv2.HoughCircles(
+                    gray,
+                    cv2.HOUGH_GRADIENT,
+                    dp=1.4,          # ↑ less sensitive
+                    minDist=80,      # ↑ prevents clustered detections
+                    param1=120,      # ↑ stronger edge requirement
+                    param2=40,       # ↑ stricter circle threshold
+                    minRadius=20,    # ignore tiny circles
+                    maxRadius=60     # ignore large objects
+                )
+
+                edges = cv2.Canny(gray, 100, 200)
+
+                
+                if circles is not None:
+                    circles = np.uint16(np.around(circles))
+                    for c in circles[0, :]:
+                        cx, cy, r = c
+
+                        # Edge validation: check how many edges exist in the circle
+                        mask = np.zeros_like(edges)
+                        cv2.circle(mask, (cx, cy), r, 255, -1)
+
+                        edge_pixels = cv2.countNonZero(cv2.bitwise_and(edges, edges, mask=mask))
+
+                        # Reject weak edge circles
+                        if edge_pixels < 150:
+                            continue
+
+                        # Draw circle on original frame (offset by ROI)
+                        cv2.circle(frame,(roi_x1 + cx, roi_y1 + cy),r,(0, 255, 0),2)
+                        cv2.circle(frame,(roi_x1 + cx, roi_y1 + cy),2,(0, 0, 255),3)
+
+
+                # Draw ROI box
+                cv2.rectangle(frame,
+                    (roi_x1, roi_y1),
+                    (roi_x2, roi_y2),
+                    (0, 0, 255),
+                    2
+                )
+
+                cv2.putText(
+                    frame,
+                    "ROI: Speed Limit Signs",
+                    (roi_x1, roi_y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 0, 255),
+                    2
+                )
+
+                cv2.putText(
+                    frame,
+                    "LOOK FOR CONES HERE",
+                    (roi_x1, roi_y2 + 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 0, 255),
+                    2
+                )
+
+
                 cv2.putText(
                     frame,
                     f"Speed: {overlay_speed:.1f} km/h",
@@ -237,6 +380,7 @@ def main():
                     2
                 )
 
+
                 cv2.imshow("Front Camera", frame)
             cv2.waitKey(1)
             time.sleep(0.001)
@@ -252,6 +396,10 @@ def main():
         camera.destroy()
         vehicle.destroy()
         cv2.destroyAllWindows()
+
+        for sign in spawned_signs:
+            sign.destroy()
+
 
         settings.synchronous_mode = False
         settings.fixed_delta_seconds = None
