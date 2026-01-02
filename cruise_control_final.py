@@ -26,6 +26,11 @@ prev_error = 0.0
 
 latest_frame = None
 
+# Global Overlay Variables
+overlay_speed = 0.0
+overlay_limit = 0.0
+overlay_state = "INIT"
+
 
 # NEW: Look ahead distance for steering (meters)
 LOOKAHEAD_DIST = 3.0 
@@ -183,6 +188,12 @@ def main():
             if speed < 5.0 and brake == 0.0:
                 throttle = max(throttle, CREEP_THROTTLE)
 
+
+            overlay_speed = speed
+            overlay_limit = TARGET_SPEED
+            overlay_state = state
+
+
             # 5. Apply Control
             vehicle.apply_control(
                 carla.VehicleControl(
@@ -194,7 +205,39 @@ def main():
             )
 
             if latest_frame is not None:
-                cv2.imshow("Front Camera", latest_frame)
+                frame = latest_frame.copy()
+
+                cv2.putText(
+                    frame,
+                    f"Speed: {overlay_speed:.1f} km/h",
+                    (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 255, 0),
+                    2
+                )
+
+                cv2.putText(
+                    frame,
+                    f"Limit: {overlay_limit:.0f} km/h",
+                    (20, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (255, 255, 0),
+                    2
+                )
+
+                cv2.putText(
+                    frame,
+                    f"State: {overlay_state}",
+                    (20, 120),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 255, 255),
+                    2
+                )
+
+                cv2.imshow("Front Camera", frame)
             cv2.waitKey(1)
             time.sleep(0.001)
 
@@ -202,7 +245,7 @@ def main():
             prev_error = error
             
             # Simple debug print
-            print(f"Speed: {speed:4.1f} | Limit: {TARGET_SPEED:3.0f} | State: {state}")
+            # print(f"Speed: {speed:4.1f} | Limit: {TARGET_SPEED:3.0f} | State: {state}")
 
     finally:
         camera.stop()
