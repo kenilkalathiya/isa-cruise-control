@@ -1,29 +1,63 @@
 # Intelligent Speed Adaptation (ISA) – CARLA Simulator
 
-This project implements a **state-based cruise control system with Intelligent Speed Adaptation (ISA)** using the CARLA simulator.
+This project implements a **state-based cruise control system with Intelligent Speed Adaptation (ISA)** using the **CARLA simulator**.  
+The system maintains a target speed, adapts automatically to speed limits, and visualizes vehicle state using a front-facing RGB camera.
 
-## Features
-- State-based cruise control (ACCEL / CRUISE / DECEL)
-- PID-based cruise-hold
-- Simulator-safe control logic (CARLA 0.9.13)
-- Intelligent Speed Adaptation (ISA) using simulated speed limits
-- Deterministic control using synchronous mode
+---
 
-## Technologies
+## 🚗 Features
+
+### Cruise Control
+- State-based longitudinal control (ACCEL / CRUISE / DECEL)
+- PID-based cruise-hold control
+- Smooth acceleration and deceleration
+- Simulator-safe logic for CARLA 0.9.13
+
+### Intelligent Speed Adaptation (ISA)
+- Dynamic speed-limit handling
+- Automatic adaptation of target speed
+- Simulated speed-limit changes (for testing)
+
+### Camera & Visualization
+- Front-facing RGB camera attached to the vehicle
+- Live camera feed using OpenCV
+- Real-time overlay showing:
+  - Vehicle speed
+  - Current speed limit
+  - Control state (ACCEL / CRUISE / DECEL)
+
+### Simulator Stability
+- Synchronous simulation mode
+- Deterministic control loop
+- Non-blocking sensor callbacks
+- Stable OpenCV window handling
+
+---
+
+
+This separation allows perception, decision-making, and control to evolve independently.
+
+---
+
+## 🛠️ Technologies Used
+
 - Python 3.7
 - CARLA Simulator 0.9.13
+- OpenCV (cv2)
+- NumPy
 - PID control
 - State machine design
 
-## How It Works
-- The vehicle maintains a target speed using cruise control
-- Speed limits change dynamically (simulated)
-- Cruise control automatically adapts to new speed limits
+---
 
-## Current Status
-✔ Cruise Control complete  
-✔ ISA logic complete  
-⬜ Camera sensor integration (next step)
+## ▶ How to Run
 
-## Author
-Your Name
+1. Start the CARLA simulator
+2. Wait for the map to load
+3. Run the script:
+
+```bash
+py -3.7 cruise_control_final.py
+
+## 🧠 System Architecture
+
