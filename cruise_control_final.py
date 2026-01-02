@@ -2,6 +2,8 @@ import carla
 import random
 import math
 import time
+import numpy as np
+import cv2
 
 
 # ================= CONFIG =================
@@ -22,6 +24,9 @@ DECEL_MARGIN = 3.0
 integral = 0.0
 prev_error = 0.0
 
+latest_frame = None
+
+
 # NEW: Look ahead distance for steering (meters)
 LOOKAHEAD_DIST = 3.0 
 
@@ -40,15 +45,27 @@ class SpeedLimitManager:
         elif elapsed < 10:
             self.current_limit = 5.0
         elif elapsed < 15:
-            self.current_limit = 30.0
+            self.current_limit = 20.0
         else:
-            self.current_limit = 50.0
+            self.current_limit = 30.0
 
         return self.current_limit
 
 def get_speed_kmh(vehicle):
     v = vehicle.get_velocity()
     return math.sqrt(v.x**2 + v.y**2 + v.z**2) * 3.6
+
+
+def process_image(image):
+    global latest_frame
+
+    array = np.frombuffer(image.raw_data, dtype=np.uint8)
+    array = array.reshape((image.height, image.width, 4))
+    frame = array[:, :, :3]
+    latest_frame = frame
+
+
+
 
 # --- NEW STEERING FUNCTION ---
 def compute_steering(vehicle, waypoint):
@@ -94,6 +111,24 @@ def main():
     vehicle.set_autopilot(False)
     vehicle.set_simulate_physics(True)
 
+        # ----- attach camera -----
+    camera_bp = world.get_blueprint_library().find("sensor.camera.rgb")
+    camera_bp.set_attribute("image_size_x", "800")
+    camera_bp.set_attribute("image_size_y", "600")
+    camera_bp.set_attribute("fov", "90")
+
+    camera_transform = carla.Transform(
+        carla.Location(x=1.5, z=2.4)
+    )
+
+    camera = world.spawn_actor(
+        camera_bp,
+        camera_transform,
+        attach_to=vehicle
+    )
+
+    camera.listen(lambda image: process_image(image))
+
     speed_manager = SpeedLimitManager()
 
     # Set spectator camera to follow car
@@ -102,6 +137,8 @@ def main():
     print("✅ CARLA CRUISE + STEERING RUNNING")
 
     try:
+        cv2.namedWindow("Front Camera", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Front Camera", 800, 600)
         while True:
             world.tick()
             TARGET_SPEED = speed_manager.update()
@@ -156,13 +193,23 @@ def main():
                 )
             )
 
+            if latest_frame is not None:
+                cv2.imshow("Front Camera", latest_frame)
+            cv2.waitKey(1)
+            time.sleep(0.001)
+
+
             prev_error = error
             
             # Simple debug print
-            print(f"Speed: {speed:4.1f} | Steer: {steer:5.2f} | State: {state}")
+            print(f"Speed: {speed:4.1f} | Limit: {TARGET_SPEED:3.0f} | State: {state}")
 
     finally:
+        camera.stop()
+        camera.destroy()
         vehicle.destroy()
+        cv2.destroyAllWindows()
+
         settings.synchronous_mode = False
         settings.fixed_delta_seconds = None
         world.apply_settings(settings)
