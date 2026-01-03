@@ -47,32 +47,15 @@ override_timer = 0.0
 override_lockout_timer = 0.0
 
 
-
+# ===== ACC CONFIG =====
+ACC_ENABLED = True
+TIME_GAP = 1.5        # seconds
+MIN_DISTANCE = 8.0    # meters
 
 
 # NEW: Look ahead distance for steering (meters)
 LOOKAHEAD_DIST = 3.0 
 
-
-# class SpeedLimitManager:
-#     def __init__(self):
-#         self.current_limit = 10.0  # initial speed limit
-#         self.start_time = time.time()
-
-#     def update(self):
-#         """Simulate road speed-limit changes over time"""
-#         elapsed = time.time() - self.start_time
-
-#         if elapsed < 5:
-#             self.current_limit = 20.0
-#         elif elapsed < 10:
-#             self.current_limit = 5.0
-#         elif elapsed < 15:
-#             self.current_limit = 20.0
-#         else:
-#             self.current_limit = 30.0
-
-#         return self.current_limit
 
 def get_speed_kmh(vehicle):
     v = vehicle.get_velocity()
@@ -86,8 +69,6 @@ def process_image(image):
     array = array.reshape((image.height, image.width, 4))
     frame = array[:, :, :3]
     latest_frame = frame
-
-
 
 
 # --- NEW STEERING FUNCTION ---
@@ -106,6 +87,43 @@ def compute_steering(vehicle, waypoint):
     while diff < -180.0: diff += 360.0
     
     return max(-1.0, min(1.0, diff * 0.03)) # 0.03 is the steering sensitivity
+
+
+def compute_lead_steering(vehicle, lookahead=6.0):
+    world = vehicle.get_world()
+    current_wp = world.get_map().get_waypoint(
+        vehicle.get_location(),
+        project_to_road=True,
+        lane_type=carla.LaneType.Driving
+    )
+
+    next_wps = current_wp.next(lookahead)
+    if not next_wps:
+        return 0.0
+
+    target_wp = next_wps[0]
+
+    veh_tf = vehicle.get_transform()
+    veh_loc = veh_tf.location
+    veh_yaw = math.radians(veh_tf.rotation.yaw)
+
+    wp_loc = target_wp.transform.location
+
+    dx = wp_loc.x - veh_loc.x
+    dy = wp_loc.y - veh_loc.y
+
+    target_angle = math.atan2(dy, dx)
+    angle_diff = target_angle - veh_yaw
+
+    # Normalize angle to [-pi, pi]
+    while angle_diff > math.pi:
+        angle_diff -= 2 * math.pi
+    while angle_diff < -math.pi:
+        angle_diff += 2 * math.pi
+
+    steer = max(-1.0, min(1.0, angle_diff * 0.7))
+    return steer
+
 
 def spawn_visual_speed_sign(world, transform):
     blueprint_library = world.get_blueprint_library()
@@ -133,6 +151,69 @@ def get_forced_speed_limit(vehicle, start_location):
     else:
         return 40.0
 
+def get_lead_vehicle(vehicle, world):
+    ego_tf = vehicle.get_transform()
+    ego_loc = ego_tf.location
+    ego_forward = ego_tf.get_forward_vector()
+
+    min_dist = None
+    lead_vehicle = None
+
+    for actor in world.get_actors().filter("vehicle.*"):
+        if actor.id == vehicle.id:
+            continue
+
+        loc = actor.get_location()
+        vec = loc - ego_loc
+
+        # Check if vehicle is in front
+        dot = ego_forward.x * vec.x + ego_forward.y * vec.y
+        if dot <= 0:
+            continue
+
+        dist = ego_loc.distance(loc)
+        if min_dist is None or dist < min_dist:
+            min_dist = dist
+            lead_vehicle = actor
+
+    return lead_vehicle, min_dist
+
+
+
+def spawn_simple_lead_vehicle(world, ego_vehicle, target_distance=200.0):
+    bp = world.get_blueprint_library().find("vehicle.tesla.model3")
+
+    ego_wp = world.get_map().get_waypoint(
+        ego_vehicle.get_location(),
+        project_to_road=True,
+        lane_type=carla.LaneType.Driving
+    )
+
+    travelled = 0.0
+    wp = ego_wp
+
+    while travelled < target_distance:
+        next_wps = wp.next(2.0)
+        if not next_wps:
+            break
+        wp = next_wps[0]
+        travelled += 2.0
+
+    lead_tf = wp.transform
+    lead_tf.location.z += 1.5
+
+    lead = world.try_spawn_actor(bp, lead_tf)
+
+    if lead:
+        lead.set_autopilot(False)
+        lead.set_simulate_physics(True)
+        # lead.apply_control(carla.VehicleControl(brake=1.0))
+        print(f"✅ Lead vehicle spawned ~{travelled:.1f} m ahead")
+
+    else:
+        print("❌ Lead vehicle spawn failed")
+
+    return lead
 
 
 
@@ -168,9 +249,12 @@ def main():
     vehicle.set_autopilot(False)
     vehicle.set_simulate_physics(True)
 
-    
+    for _ in range(10):
+        world.tick()
+        time.sleep(0.05)
 
 
+    lead_vehicle_test = spawn_simple_lead_vehicle(world, vehicle)
 
 
 
@@ -223,11 +307,43 @@ def main():
 
     print("✅ CARLA CRUISE + STEERING RUNNING")
 
+    start_time = time.time()
+
     try:
         cv2.namedWindow("Front Camera", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("Front Camera", 800, 600)
         while True:
             world.tick()
+
+           # ===== LEAD VEHICLE CONTROL =====
+            sim_time = time.time() - start_time
+
+            if lead_vehicle_test:
+                steer = compute_lead_steering(lead_vehicle_test)
+
+                throttle = 0.0
+                brake = 0.0
+
+                if sim_time < 6.0:
+                    throttle = 0.15
+                    brake = 0.0
+                elif sim_time < 10.0:
+                    throttle = 0.0
+                    brake = 0.5
+                else:
+                    throttle = 0.15
+                    brake = 0.0
+
+                lead_vehicle_test.apply_control(
+                    carla.VehicleControl(
+                        throttle=throttle,
+                        brake=brake,
+                        steer=steer,
+                        hand_brake=False
+                    )
+                )
+
+
             # ===== TIMER UPDATE =====
             if startup_delay_timer > 0:
                 startup_delay_timer -= DT
@@ -247,18 +363,42 @@ def main():
             if isa_state == ISA_ACTIVE:
                 TARGET_SPEED = get_forced_speed_limit(vehicle, start_location)
             else:
-                TARGET_SPEED = 100.0  # effectively disables ISA
+                TARGET_SPEED = 80.0  # effectively disables ISA
 
             
+            # ===== ACC LOGIC (v1) =====
+            lead_vehicle = None
+            lead_dist = None
+
+            # if ACC_ENABLED and isa_state == ISA_ACTIVE:
+            if ACC_ENABLED:
+                lead_vehicle, lead_dist = get_lead_vehicle(vehicle, world)
+
+                if lead_vehicle is not None and lead_dist is not None:
+                    safe_dist = max(MIN_DISTANCE, (speed / 3.6) * TIME_GAP)
+
+                    if lead_dist < safe_dist:
+                        TARGET_SPEED = min(
+                            TARGET_SPEED,
+                            speed * (lead_dist / safe_dist)
+                        )
+
+            # ===== ACC SAFETY LAYER (ALWAYS ACTIVE) =====
+            lead_vehicle, lead_dist = get_lead_vehicle(vehicle, world)
+
+            if lead_vehicle and lead_dist is not None:
+                safe_dist = max(MIN_DISTANCE, (speed / 3.6) * TIME_GAP)
+
+                if lead_dist < safe_dist:
+                    acc_speed = speed * (lead_dist / safe_dist)
+                    TARGET_SPEED = min(TARGET_SPEED, acc_speed)
+
 
 
             # ===== DRIVER OVERRIDE DETECTION (STABLE) =====
             control = vehicle.get_control()
 
-            # Driver override allowed ONLY if:
-            # - ISA is ACTIVE
-            # - Startup delay finished
-            # - Lockout finished
+            # Driver override allowed only if ISA is active
             if (
                 control.throttle > 0.7
                 and isa_state == ISA_ACTIVE
@@ -271,13 +411,6 @@ def main():
             if isa_state == ISA_OVERRIDDEN and override_timer <= 0:
                 isa_state = ISA_ACTIVE
                 override_lockout_timer = OVERRIDE_LOCKOUT
-
-
-
-
-
-
-
 
 
             # 1. Update Camera
@@ -458,19 +591,23 @@ def main():
                     2
                 )
 
-
-
-
+                if lead_vehicle and lead_dist:
+                    cv2.putText(
+                        frame,
+                        f"ACC: Lead {lead_dist:.1f} m",
+                        (20, 200),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        (0, 180, 255),
+                        2
+                    )
 
                 cv2.imshow("Front Camera", frame)
             cv2.waitKey(1)
             time.sleep(0.001)
 
-
             prev_error = error
             
-            # Simple debug print
-            # print(f"Speed: {speed:4.1f} | Limit: {TARGET_SPEED:3.0f} | State: {state}")
 
     finally:
         camera.stop()
