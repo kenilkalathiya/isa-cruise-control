@@ -31,6 +31,24 @@ overlay_speed = 0.0
 overlay_limit = 0.0
 overlay_state = "INIT"
 
+# ===== ISA STATES =====
+ISA_ACTIVE = "ACTIVE"
+ISA_OVERRIDDEN = "OVERRIDDEN"
+ISA_DISABLED = "DISABLED"
+
+# ===== TIMING CONFIG =====
+STARTUP_OVERRIDE_DELAY = 5.0   # seconds
+OVERRIDE_DURATION = 6.0        # seconds
+OVERRIDE_LOCKOUT = 7.0         # seconds
+
+isa_state = ISA_ACTIVE
+startup_delay_timer = STARTUP_OVERRIDE_DELAY
+override_timer = 0.0
+override_lockout_timer = 0.0
+
+
+
+
 
 # NEW: Look ahead distance for steering (meters)
 LOOKAHEAD_DIST = 3.0 
@@ -120,6 +138,8 @@ def get_forced_speed_limit(vehicle, start_location):
 
 def main():
     global integral, prev_error
+    global isa_state
+    global startup_delay_timer, override_timer, override_lockout_timer
 
     client = carla.Client("localhost", 2000)
     client.set_timeout(10.0)
@@ -147,6 +167,12 @@ def main():
 
     vehicle.set_autopilot(False)
     vehicle.set_simulate_physics(True)
+
+    
+
+
+
+
 
     # -------- SPAWN VISUAL SPEED SIGNS (VISION TARGETS) --------
     spawned_signs = []
@@ -202,10 +228,51 @@ def main():
         cv2.resizeWindow("Front Camera", 800, 600)
         while True:
             world.tick()
+            # ===== TIMER UPDATE =====
+            if startup_delay_timer > 0:
+                startup_delay_timer -= DT
+
+            if override_timer > 0:
+                override_timer -= DT
+
+            if override_lockout_timer > 0:
+                override_lockout_timer -= DT
+
+
+            speed = get_speed_kmh(vehicle)
+
             # TARGET_SPEED = speed_manager.update()
             # current_wp = world.get_map().get_waypoint(vehicle.get_location())
             # TARGET_SPEED = vehicle.get_speed_limit()
-            TARGET_SPEED = get_forced_speed_limit(vehicle, start_location)
+            if isa_state == ISA_ACTIVE:
+                TARGET_SPEED = get_forced_speed_limit(vehicle, start_location)
+            else:
+                TARGET_SPEED = 100.0  # effectively disables ISA
+
+            
+
+
+            # ===== DRIVER OVERRIDE DETECTION (STABLE) =====
+            control = vehicle.get_control()
+
+            # Driver override allowed ONLY if:
+            # - ISA is ACTIVE
+            # - Startup delay finished
+            # - Lockout finished
+            if (
+                control.throttle > 0.7
+                and isa_state == ISA_ACTIVE
+                and startup_delay_timer <= 0
+                and override_lockout_timer <= 0
+            ):
+                isa_state = ISA_OVERRIDDEN
+                override_timer = OVERRIDE_DURATION
+
+            if isa_state == ISA_OVERRIDDEN and override_timer <= 0:
+                isa_state = ISA_ACTIVE
+                override_lockout_timer = OVERRIDE_LOCKOUT
+
+
 
 
 
@@ -218,7 +285,7 @@ def main():
             spectator.set_transform(carla.Transform(t.location + carla.Location(z=20), carla.Rotation(pitch=-90)))
 
             # 2. Get Speed & Error
-            speed = get_speed_kmh(vehicle)
+            
             error = TARGET_SPEED - speed
 
             # 3. CALCULATE STEERING (The Fix)
@@ -255,7 +322,8 @@ def main():
 
             overlay_speed = speed
             overlay_limit = TARGET_SPEED
-            overlay_state = state
+            # overlay_state = state
+            overlay_state = f"{state} | ISA: {isa_state}"
 
 
             # 5. Apply Control
@@ -379,6 +447,19 @@ def main():
                     (0, 255, 255),
                     2
                 )
+
+                cv2.putText(
+                    frame,
+                    f"Startup: {startup_delay_timer:.1f}s | Override: {override_timer:.1f}s | Lockout: {override_lockout_timer:.1f}s",
+                    (20, 160),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 255),
+                    2
+                )
+
+
+
 
 
                 cv2.imshow("Front Camera", frame)
